@@ -212,6 +212,14 @@ class UtilSubscription {
 			keys.push('resolvedLayout');
 		};
 
+		// createdInContext is only half the story: the locator is what lets "Created in" deep-link
+		// to the block, message or relation rather than just opening the context object. A view's
+		// relation list never names it (it is a hidden relation), so pair it here — otherwise a
+		// dataview column, widget or list renders the property but degrades to a plain open.
+		if (keys.includes('createdInContext')) {
+			keys.push('createdInContextRef');
+		};
+
 		return keys;
 	};
 
@@ -379,7 +387,7 @@ class UtilSubscription {
 	};
 
 	/**
-	 * Performs a search for objects matching the given parameters.
+	 * Performs a search for objects matching the given parameters without highlight metadata.
 	 * @param {Partial<I.SearchSubscribeParam> & { fullText?: string }} param - Search parameters.
 	 * @param {(message: any) => void} [callBack] - Optional callback for search results.
 	 */
@@ -417,9 +425,7 @@ class UtilSubscription {
 			return;
 		};
 
-		const cmd = fullText ? 'ObjectSearchWithMeta' : 'ObjectSearch';
-
-		C[cmd](spaceId, filters, sorts, keys, fullText, offset, limit, (message: any) => {
+		C.ObjectSearch(spaceId, filters, sorts, keys, fullText, offset, limit, (message: any) => {
 			if (message.records) {
 				message.records = message.records.map(it => S.Detail.mapper(it, skipLayoutFormat));
 			};
@@ -476,9 +482,9 @@ class UtilSubscription {
 	 * Creates global subscriptions for the current account.
 	 * @param {() => void} [callBack] - Optional callback after creation.
 	 */
-	createGlobal (callBack?: () => void) {
+	createGlobal (callBack?: () => void, lite?: boolean) {
 		const { account } = S.Auth;
-	
+
 		if (!account) {
 			callBack?.();
 			return;
@@ -539,8 +545,19 @@ class UtilSubscription {
 			},
 		];
 		
+		// Lite (quick search panel boot) keeps this whole list: the search popup's Messages
+		// scope gates its chip on the cross-space chat subscriptions, and resolves the chat
+		// behind every message row through them. Lite drops only the per-space subSpace
+		// fan-out below (one subscription per space), which serves vault UI that window
+		// never renders
 		this.destroyList(list.map(it => it.subId), true, () => {
-			this.createList(list, () => this.createSubSpace(null, callBack));
+			this.createList(list, () => {
+				if (lite) {
+					callBack?.();
+				} else {
+					this.createSubSpace(null, callBack);
+				};
+			});
 		});
 	};
 
@@ -930,6 +947,26 @@ class UtilSubscription {
 	 */
 	discussionRelationKeys () {
 		return J.Relation.default.concat([ 'snippet', 'lastMessageDate', 'unreadMessageCount', 'unreadMentionCount', 'notificationSubscribers' ]);
+	};
+
+	/**
+	 * Filters every created-in tree query shares: excluded layouts and templates never enter the
+	 * tree, neither as nodes nor as parents. Bookmarks are excluded too unless asked for, as
+	 * pasted links would bury the structure.
+	 * @param {boolean} showBookmarks - Whether bookmark objects take part.
+	 * @returns {I.Filter[]} The filters.
+	 */
+	createdTreeFilters (showBookmarks: boolean): I.Filter[] {
+		const skipLayouts = U.Object.getFileAndSystemLayouts().concat([ I.ObjectLayout.Participant ]);
+
+		if (!showBookmarks) {
+			skipLayouts.push(I.ObjectLayout.Bookmark);
+		};
+
+		return [
+			{ relationKey: 'resolvedLayout', condition: I.FilterCondition.NotIn, value: skipLayouts },
+			{ relationKey: 'type.uniqueKey', condition: I.FilterCondition.NotEqual, value: J.Constant.typeKey.template },
+		];
 	};
 
 	getRecentSubId (): string {

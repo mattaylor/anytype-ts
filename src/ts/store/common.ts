@@ -35,6 +35,9 @@ class CommonStore {
 	public redirect = '';
 	public languages: string[] = [];
 	public spaceId = '';
+	// Space chosen on the Import screen. Lives here rather than in page state because the
+	// format sub-pages are separate routes; read it through U.Space.getImportTargetId().
+	public importSpaceId = '';
 	public notionToken = '';
 	public showRelativeDatesValue = null;
 	public fullscreenObjectValue = null;
@@ -43,16 +46,25 @@ class CommonStore {
 	public dateFormatValue = null;
 	public timeFormatValue = null;
 	public isOnlineValue = false;
+	public globalShortcutStatusValue: { registered: boolean; unavailable: boolean } | null = null;
+
+	// Set once when this renderer boots as the Spotlight-style quick search panel;
+	// U.Object open calls then redirect to the main window instead of navigating here
+	public isQuickSearchWindow = false;
 	public hasCleanupSuggestionsValue = false;
+	public hasTreeSectionValue = false;
 	public chatCmdSendValue = null;
 	public commentCmdSendValue = null;
 	public updateVersionValue = '';
 	public vaultIsMinimalValue = null;
 	public gridTitleClickValue = null;
 	public unicodeReplaceValue = null;
+	public sendTypingValue = null;
 	public leftSidebarStateValue = { page: '', subPage: '' };
 
 	public recentEditModeValue: I.RecentEditMode = null;
+	public treeSortModeValue: I.TreeSortMode = null;
+	public treeShowBookmarksValue: boolean = null;
 	public sidebarViewValue: I.SidebarView = null;
 	public hideSidebarValue = null;
 	public hideFileObjectsInTreeValue = null;
@@ -151,11 +163,14 @@ class CommonStore {
 			linkStyleValue: observable,
 			fileStyleValue: observable,
 			isOnlineValue: observable,
+			globalShortcutStatusValue: observable,
 			hasCleanupSuggestionsValue: observable,
+			hasTreeSectionValue: observable,
 			hideSidebarValue: observable,
 			hideFileObjectsInTreeValue: observable,
 			autoDownloadValue: observable,
 			spaceId: observable,
+			importSpaceId: observable,
 			leftSidebarStateValue: observable,
 			rightSidebarStateValue: observable,
 			showRelativeDatesValue: observable,
@@ -167,12 +182,15 @@ class CommonStore {
 			vaultIsMinimalValue: observable,
 			gridTitleClickValue: observable,
 			unicodeReplaceValue: observable,
+			sendTypingValue: observable,
 			notificationSoundValue: observable,
 			isActiveTab: observable,
 			isPinnedValue: observable,
 			widgetSectionsValue: observable,
 			downloadingIdsValue: observable,
 			recentEditModeValue: observable,
+			treeSortModeValue: observable,
+			treeShowBookmarksValue: observable,
 			sidebarViewValue: observable,
 			inviteMap: observable,
 			config: computed,
@@ -192,9 +210,12 @@ class CommonStore {
 			vaultIsMinimal: computed,
 			gridTitleClick: computed,
 			unicodeReplace: computed,
+			sendTyping: computed,
 			notificationSound: computed,
 			widgetSections: computed,
 			recentEditMode: computed,
+			treeSortMode: computed,
+			treeShowBookmarks: computed,
 			sidebarView: computed,
 			isPinned: computed,
 			singleTab: computed,
@@ -209,6 +230,7 @@ class CommonStore {
 			themeSet: action,
 			nativeThemeSet: action,
 			spaceSet: action,
+			importSpaceIdSet: action,
 			spaceStorageSet: action,
 			inviteSet: action,
 			inviteClear: action,
@@ -217,7 +239,9 @@ class CommonStore {
 			dateFormatSet: action,
 			timeFormatSet: action,
 			isOnlineSet: action,
+			globalShortcutStatusSet: action,
 			hasCleanupSuggestionsSet: action,
+			hasTreeSectionSet: action,
 			setLeftSidebarState: action,
 			setRightSidebarState: action,
 			clearRightSidebarState: action,
@@ -227,10 +251,13 @@ class CommonStore {
 			vaultIsMinimalSet: action,
 			gridTitleClickSet: action,
 			unicodeReplaceSet: action,
+			sendTypingSet: action,
 			notificationSoundSet: action,
 			widgetSectionsInit: action,
 			widgetSectionsSet: action,
 			recentEditModeSet: action,
+			treeSortModeSet: action,
+			treeShowBookmarksSet: action,
 			sidebarViewSet: action,
 			isActiveTabSet: action,
 			isPinnedSet: action,
@@ -319,6 +346,22 @@ class CommonStore {
 			ret = Storage.get('recentEditMode');
 		};
 		return Number(ret) || I.RecentEditMode.All;
+	};
+
+	get treeSortMode (): I.TreeSortMode {
+		let ret = this.treeSortModeValue;
+		if (ret === null) {
+			ret = Storage.get('treeSortMode');
+		};
+		return Number(ret) || I.TreeSortMode.Custom;
+	};
+
+	get treeShowBookmarks (): boolean {
+		let ret = this.treeShowBookmarksValue;
+		if (ret === null) {
+			ret = Storage.get('treeShowBookmarks');
+		};
+		return Boolean(ret);
 	};
 
 	get sidebarView (): I.SidebarView {
@@ -469,6 +512,10 @@ class CommonStore {
 		return Boolean(this.hasCleanupSuggestionsValue);
 	};
 
+	get hasTreeSection (): boolean {
+		return Boolean(this.config.experimental && this.hasTreeSectionValue);
+	};
+
 	get diff (): I.Diff[] {
 		return this.diffValue || [];
 	};
@@ -513,6 +560,15 @@ class CommonStore {
 			ret = true;
 		};
 		return ret;
+	};
+
+	/** Whether typing in chats and comments is published to others; on unless turned off. */
+	get sendTyping (): boolean {
+		let ret = this.sendTypingValue;
+		if (ret === null) {
+			ret = Storage.get('sendTyping');
+		};
+		return (ret !== false);
 	};
 
 	get notificationSound (): string {
@@ -649,6 +705,17 @@ class CommonStore {
 	 */
 	spaceSet (id: string) {
 		this.spaceId = String(id || '');
+
+		// The import target is only meaningful next to the space it was chosen from.
+		this.importSpaceId = '';
+	};
+
+	/**
+	 * Sets the space chosen as the import target.
+	 * @param {string} id - The space ID, empty to fall back to the current space.
+	 */
+	importSpaceIdSet (id: string) {
+		this.importSpaceId = String(id || '');
 	};
 
 	/**
@@ -991,7 +1058,7 @@ class CommonStore {
 		const c = this.getThemeClass();
 
 		U.Dom.addBodyClass('theme', c);
-		Renderer.send('setBackground', c);
+		Renderer.send('setBackground');
 	};
 
 	/**
@@ -1068,12 +1135,24 @@ class CommonStore {
 		console.log('[Online status]:', v);
 	};
 
+	get globalShortcutStatus (): { registered: boolean; unavailable: boolean } | null {
+		return this.globalShortcutStatusValue;
+	};
+
+	globalShortcutStatusSet (v: { registered: boolean; unavailable: boolean } | null) {
+		this.globalShortcutStatusValue = v || null;
+	};
+
 	/**
 	 * Sets whether the current space has cleanup suggestions.
 	 * @param {boolean} v - The value.
 	 */
 	hasCleanupSuggestionsSet (v: boolean) {
 		this.hasCleanupSuggestionsValue = Boolean(v);
+	};
+
+	hasTreeSectionSet (v: boolean) {
+		this.hasTreeSectionValue = Boolean(v);
 	};
 
 	/**
@@ -1099,6 +1178,10 @@ class CommonStore {
 
 	unicodeReplaceSet (v: boolean) {
 		this.boolSet('unicodeReplace', v);
+	};
+
+	sendTypingSet (v: boolean) {
+		this.boolSet('sendTyping', v);
 	};
 
 	notificationSoundSet (v: string) {
@@ -1313,6 +1396,16 @@ class CommonStore {
 		Storage.set('recentEditMode', this.recentEditModeValue);
 	};
 
+	treeSortModeSet (v: I.TreeSortMode) {
+		this.treeSortModeValue = Number(v) || I.TreeSortMode.Custom;
+		Storage.set('treeSortMode', this.treeSortModeValue);
+	};
+
+	treeShowBookmarksSet (v: boolean) {
+		this.treeShowBookmarksValue = Boolean(v);
+		Storage.set('treeShowBookmarks', this.treeShowBookmarksValue);
+	};
+
 	sidebarViewSet (v: I.SidebarView) {
 		this.sidebarViewValue = v || I.SidebarView.Widgets;
 		Storage.setSpaceKey('sidebarView', this.sidebarViewValue, false);
@@ -1321,6 +1414,9 @@ class CommonStore {
 	nullifySpaceKeys () {
 		this.defaultType = null;
 		this.sidebarViewValue = null;
+		this.recentEditModeValue = null;
+		this.treeSortModeValue = null;
+		this.treeShowBookmarksValue = null;
 		this.widgetSectionsInit();
 	};
 
@@ -1330,6 +1426,7 @@ class CommonStore {
 			I.WidgetSection.Unread,
 			I.WidgetSection.MyFavorites,
 			I.WidgetSection.RecentEdit,
+			I.WidgetSection.Tree,
 			I.WidgetSection.Type,
 			I.WidgetSection.Bin,
 		];
@@ -1338,7 +1435,8 @@ class CommonStore {
 
 		const makeParam = (id: I.WidgetSection): I.WidgetSectionParam => {
 			const prev = savedMap.get(id);
-			const isClosed = (id == I.WidgetSection.Pin) ? false : (prev?.isClosed ?? false);
+			// Tree starts collapsed: it subscribes to the whole space hierarchy only once opened
+			const isClosed = (id == I.WidgetSection.Pin) ? false : (prev?.isClosed ?? (id == I.WidgetSection.Tree));
 			return { id, isClosed, isHidden: prev?.isHidden ?? false, view: prev?.view ?? 'list' };
 		};
 
@@ -1351,11 +1449,21 @@ class CommonStore {
 				seen.add(item.id);
 			};
 		};
+		// Sections missing from the saved order are appended, except Tree which goes after Recently edited
 		for (const id of allIds) {
-			if (!seen.has(id)) {
-				full.push(makeParam(id));
-				seen.add(id);
+			if (seen.has(id)) {
+				continue;
 			};
+
+			const anchorIdx = (id == I.WidgetSection.Tree) ? full.findIndex(it => it.id == I.WidgetSection.RecentEdit) : -1;
+
+			if (anchorIdx >= 0) {
+				full.splice(anchorIdx + 1, 0, makeParam(id));
+			} else {
+				full.push(makeParam(id));
+			};
+
+			seen.add(id);
 		};
 
 		if (!U.Common.compareJSON(full, this.widgetSectionsValue)) {

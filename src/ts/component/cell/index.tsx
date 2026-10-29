@@ -83,6 +83,14 @@ const Cell = forwardRef<I.CellRef, Props>((props, ref) => {
 			};
 		};
 
+		// "Created in" deep-links back into the origin context instead of plain-opening it
+		if (relation.relationKey == 'createdInContext') {
+			if (check) {
+				U.Object.openCreatedInContext(record, analytics.route.relation, subId);
+			};
+			return;
+		};
+
 		const { config } = S.Common;
 		const cell = U.Dom.get(cellId);
 		const className = [];
@@ -280,6 +288,9 @@ const Cell = forwardRef<I.CellRef, Props>((props, ref) => {
 				break;
 			};
 
+			// Without inplace editing the text menu is the only editor available (JS-9855),
+			// with inplace editing the input in component/cell/text.tsx handles both formats
+			case I.RelationType.ShortText:
 			case I.RelationType.Number: {
 				if (!noInplace) {
 					break;

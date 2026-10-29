@@ -3,7 +3,9 @@
 import * as Diff from 'diff';
 import * as I from 'Interface';
 import Storage from 'Lib/storage';
+import Download from 'Lib/download';
 import { focus } from 'Lib/focus';
+import { getExportResultStatus } from 'Lib/util/exportReport';
 
 class Action {
 
@@ -255,8 +257,13 @@ class Action {
 	};
 
 	/**
-	 * Opens a file by ID and route, downloading it if necessary.
-	 * @param {string} id - The file ID.
+	 * Fetches a file over the gateway and hands it to the system.
+	 *
+	 * What the system can view is opened from a temporary copy that keeps the
+	 * same path on every open, so opening the same file twice moves no bytes and
+	 * leaves no duplicate. Anything else is revealed in the file manager, and
+	 * lands in the download folder, where the user can find it again.
+	 * @param {any} object - The file object.
 	 * @param {string} route - The route context for analytics.
 	 */
 	openFile (object: any, route: string) {
@@ -266,14 +273,7 @@ class Action {
 
 		const ext = String(object.fileExt || '').toLowerCase();
 		const cb = () => {
-			S.Common.downloadStart(object.id);
-			C.FileDownload(object.id, U.Common.getElectron().downloadPath(), (message: any) => {
-				S.Common.downloadDone(object.id);
-				if (message.path) {
-					this.openPath(message.path);
-					analytics.event('OpenMedia', { route });
-				};
-			});
+			Download.open(object, route);
 		};
 		const isDangerous = !ext || [
 			'exe', 'bat', 'cmd', 'com', 'cpl', 'scr', 'msi', 'msp', 'pif', 'reg', 'vbs', 'vbe', 'ws', 'wsf', 'wsh', 'ps1', 'jar',
@@ -299,18 +299,17 @@ class Action {
 	 * Downloads a file by ID and route, optionally as an image.
 	 * @param {string} id - The file ID.
 	 * @param {string} route - The route context for analytics.
-	 * @param {boolean} isImage - Whether to treat the file as an image.
 	 */
-	downloadFile (id: string, route: string, isImage: boolean) {
-		this.downloadFiles([ { id, isImage } ], route);
+	downloadFile (id: string, route: string) {
+		this.downloadFiles([ { id } ], route);
 	};
 
 	/**
 	 * Downloads multiple files into a single chosen directory using one dialog.
-	 * @param {{ id: string, isImage: boolean }[]} files - The files to download.
+	 * @param {{ id: string }[]} files - The files to download.
 	 * @param {string} route - The route context for analytics.
 	 */
-	downloadFiles (files: { id: string, isImage: boolean }[], route: string) {
+	downloadFiles (files: { id: string }[], route: string) {
 		files = (files || []).filter(it => it.id && !S.Common.isDownloading(it.id));
 
 		if (!files.length) {
@@ -318,20 +317,7 @@ class Action {
 		};
 
 		this.openDirectoryDialog({ buttonLabel: translate('commonDownload') }, paths => {
-			files.forEach(file => {
-				const url = file.isImage ? S.Common.imageUrl(file.id, 0) : S.Common.fileUrl(file.id);
-
-				S.Common.downloadStart(file.id);
-
-				const promise = Renderer.send('download', url, { directory: paths[0] });
-				if (promise && promise.then) {
-					promise.then(() => S.Common.downloadDone(file.id));
-				} else {
-					S.Common.downloadDone(file.id);
-				};
-			});
-
-			analytics.event('DownloadMedia', { route });
+			Download.start(files, paths[0], route);
 		});
 	};
 
@@ -543,13 +529,14 @@ class Action {
 	};
 
 	/**
-	 * Imports objects into the current space from selected files.
+	 * Imports objects into the given space from selected files.
+	 * @param {string} spaceId - The space receiving the import.
 	 * @param {I.ImportType} type - The import type.
 	 * @param {string[]} extensions - Allowed file extensions.
 	 * @param {any} [options] - Additional import options.
 	 * @param {function} [callBack] - Optional callback after import.
 	 */
-	import (type: I.ImportType, extensions: string[], options?: any, callBack?: (message: any) => void) {
+	import (spaceId: string, type: I.ImportType, extensions: string[], options?: any, callBack?: (message: any) => void) {
 		const fileOptions: any = { 
 			properties: [ 'openFile', 'multiSelections' ],
 			filters: [
@@ -569,10 +556,10 @@ class Action {
 				return;
 			};
 
-			analytics.event('ClickImportFile', { type });
+			analytics.event('ClickImportFile', { type, ...U.Data.getImportAiAnalytics(type) });
 			Preview.toastShow({ text: translate('toastImportStart') });
 
-			C.ObjectImport(S.Common.space, Object.assign(options || {}, { paths }), [], true, type, I.ImportMode.IgnoreErrors, false, false, false, false, (message: any) => {
+			C.ObjectImport(spaceId, Object.assign(options || {}, { paths, aiParams: U.Data.getImportAiParams() }), [], true, type, I.ImportMode.IgnoreErrors, false, false, false, false, (message: any) => {
 				if (!message.error.code) {
 					callBack?.(message);
 				};
@@ -596,11 +583,26 @@ class Action {
 			onSelectPath?.();
 
 			C.ObjectListExport(spaceId, paths[0], ids, type, zip, nested, files, archived, json, (message: any) => {
-				if (message.error.code) {
+				const status = getExportResultStatus(message.report, message.error.code);
+				if (status != 'Success') {
+					S.Popup.open('exportResult', {
+						data: {
+							report: message.report,
+							error: message.error,
+							path: message.path && !message.error.code ? paths[0] : '',
+							spaceId,
+							exportType: type,
+						},
+					});
+				};
+
+				if (message.error.code || [ 'Failed', 'Canceled' ].includes(status)) {
 					return;
 				};
 
-				this.openPath(paths[0]);
+				if (status == 'Success') {
+					this.openPath(paths[0]);
+				};
 				analytics.event('Export', { type, middleTime: message.middleTime, route });
 
 				callBack?.(message);
@@ -760,8 +762,9 @@ class Action {
 	 * Opens the space creation popup with the selected create type.
 	 * @param {I.SpaceCreateType} type - The selected create type (Personal, Group, Join).
 	 * @param {string} route - The route context for analytics.
+	 * @param {I.SpaceCreateOptions} [options] - Intent the space is created for, and a callback receiving its ID.
 	 */
-	createSpace (type: I.SpaceCreateType, route: string) {
+	createSpace (type: I.SpaceCreateType, route: string, options?: I.SpaceCreateOptions) {
 		if (type == I.SpaceCreateType.Group) {
 			const mySharedSpaces = U.Space.getMySharedSpacesList();
 			const { sharedSpacesLimit } = U.Space.getProfile();
@@ -782,8 +785,10 @@ class Action {
 			};
 		};
 
+		const { intent, onCreate } = options || {};
+
 		S.Popup.closeAll(null, () => {
-			S.Popup.open('spaceCreate', { data: { type, route } });
+			S.Popup.open('spaceCreate', { data: { type, route, intent, onCreate } });
 		});
 	};
 
@@ -1091,10 +1096,14 @@ class Action {
 
 	membershipUpgrade (event?: any) {
 		const product = S.Membership.data?.getTopProduct();
+
+		// Unknown status: the membership page loads it and shows what is known
+		if (!S.Membership.isStatusKnown) {
+			this.openSettings('membership', '');
+		} else
 		if (!product) {
 			return;
-		};
-
+		} else
 		if (!product.isUpgradeable) {
 			S.Popup.open('confirm', {
 				data: {

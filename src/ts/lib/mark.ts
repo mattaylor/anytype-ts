@@ -92,6 +92,7 @@ const Order = [
  */
 const ZWS = '\u200B';
 const ZWS_TYPES = [ ...Order ];
+const RE_ZWS = new RegExp(ZWS, 'g');
 
 class Mark {
 
@@ -123,7 +124,10 @@ class Mark {
 			return marks;
 		};
 
-		const map = U.Common.mapToArray(marks, 'type');
+		// Copy before mutating: callers pass the block's stored marks, so editing
+		// them in place makes the store look already-updated and the write is
+		// then dropped as a no-op, never reaching middleware (JS-9853)
+		const map = U.Common.mapToArray((marks || []).map(m => ({ ...m, range: { ...m.range } })), 'type');
 		const type = mark.type;
 
 		let add = true;
@@ -239,7 +243,11 @@ class Mark {
 	 * @returns {I.Mark[]} The updated list of marks.
 	 */
 	checkRanges(text: string, marks: I.Mark[]) {
-		marks = (marks || []).slice().sort(this.sort);
+		// slice() copied the array but not the marks inside it, and the loop below
+		// edits mark.range in place. toHtml runs this on every render with the
+		// block's stored marks, so the ranges were rewritten in the store, which
+		// then defeats the save's no-op guard the same way toggle did (JS-9853)
+		marks = (marks || []).map(m => ({ ...m, range: { ...m.range } })).sort(this.sort);
 
 		for (let i = 0; i < marks.length; ++i) {
 			const mark = marks[i];
@@ -359,6 +367,32 @@ class Mark {
 		};
 
 		return marks;
+	};
+
+	/**
+	 * Adjusts mark ranges for a replacement of text[from, to) with `length` new characters.
+	 * A mark whose whole range sat inside the replaced text is dropped rather than shifted:
+	 * its anchor text is gone, and adjust() alone would slide it down onto unrelated words
+	 * (a pasted-over link keeps pointing at its old URL from the middle of the new text,
+	 * and checkUrls then adds a second mark for the real one — JS-9869). Only param-carrying
+	 * marks are dropped, mirroring the guard onKeyUpInput applies when a character is typed
+	 * over a selection.
+	 * @param {I.Mark[]} marks - The list of marks.
+	 * @param {number} from - The start of the replaced range.
+	 * @param {number} to - The end of the replaced range.
+	 * @param {number} length - The length of the inserted text.
+	 * @returns {I.Mark[]} The updated list of marks.
+	 */
+	adjustForReplace(marks: I.Mark[], from: number, to: number, length: number): I.Mark[] {
+		const kept = (marks || []).filter(mark => {
+			if ((to <= from) || !this.needsBreak(mark.type)) {
+				return true;
+			};
+
+			return !((mark.range.from >= from) && (mark.range.to <= to));
+		});
+
+		return this.adjust(kept, from, length - (to - from));
 	};
 
 	/**
@@ -540,6 +574,19 @@ class Mark {
 		html = String(html || '');
 		html = html.replace(/\u200B/g, '');
 		html = html.replace(/&nbsp;/g, ' ');
+
+		// Native edits (e.g. macOS Writing Tools replace) insert lines as <div>/<p> blocks —
+		// convert them to newlines, otherwise the tags end up as literal text
+		const startsWithBlock = /^<(div|p)\b/i.test(html);
+
+		html = html.replace(/<(div|p)\b[^>]*>\s*<br\s*\/?>\s*<\/\1>/gi, '\n');
+		html = html.replace(/<(div|p)\b[^>]*>/gi, '\n');
+		html = html.replace(/<\/(div|p)>/gi, '');
+
+		if (startsWithBlock) {
+			html = html.replace(/^\n/, '');
+		};
+
 		html = html.replace(/<br\/?>/g, '\n');
 
 		// Remove inner tags from mentions and emoji
@@ -975,19 +1022,16 @@ class Mark {
 	 * @returns {I.Mark[]} The updated marks.
 	 */
 	toggleLink(newMark: I.Mark, marks: I.Mark[]) {
-		for (let i = 0; i < marks.length; ++i) {
-			const mark = marks[i];
-			if ([I.MarkType.Link, I.MarkType.Object].includes(mark.type) &&
+		// Filter into a new list rather than splicing the caller's: the input is the
+		// block's stored marks and must not be edited in place (JS-9853)
+		const list = (marks || []).filter(mark => {
+			return !([ I.MarkType.Link, I.MarkType.Object ].includes(mark.type) &&
 				(mark.range.from >= newMark.range.from) &&
 				(mark.range.to <= newMark.range.to) &&
-				(mark.param == newMark.param)
-			) {
-				marks.splice(i, 1);
-				i--;
-			};
-		};
+				(mark.param == newMark.param));
+		});
 
-		return this.toggle(marks, newMark);
+		return this.toggle(list, newMark);
 	};
 
 	/**
@@ -1214,6 +1258,20 @@ class Mark {
 	hasZws (el: HTMLElement): boolean {
 		const text = el.textContent || '';
 		return text.includes(ZWS);
+	};
+
+	/**
+	 * Remove ZWS characters from plain text before it is rendered into the DOM.
+	 * ZWS is the editor's own cursor anchor around inline markup, never content:
+	 * the model drops it on read (Editable.getTextValue). A ZWS that arrives with
+	 * pasted text is not an anchor, so rendering it leaves a character the model
+	 * does not have — the caret can sit behind it and Backspace deletes it without
+	 * changing a single visible character (JS-9857).
+	 * @param {string} text - The plain text to render.
+	 * @returns {string} The text without ZWS characters.
+	 */
+	stripZws (text: string): string {
+		return String(text || '').replace(RE_ZWS, '');
 	};
 
 	/**

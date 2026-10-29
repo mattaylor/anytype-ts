@@ -9,6 +9,7 @@ import Attachment from './attachment';
 import * as I from 'Interface';
 import * as M from 'Model';
 import Storage from 'Lib/storage';
+import { presence } from 'Lib/presence';
 
 interface Props extends I.BlockComponent {
 	blockId: string;
@@ -160,6 +161,7 @@ const ChatForm = forwardRef<RefProps, Props>((props, ref) => {
 	const onBlurInput = () => {
 		keyboard.disableSelection(false);
 		editableRef.current?.placeholderCheck();
+		presence.stop(rootId);
 
 		saveState(attachments);
 	};
@@ -321,7 +323,7 @@ const ChatForm = forwardRef<RefProps, Props>((props, ref) => {
 
 				const res = U.String.insert(current, newText, from, to);
 
-				marks.current = Mark.adjust(marks.current, from, newText.length - (to - from));
+				marks.current = Mark.adjustForReplace(marks.current, from, to, newText.length);
 				marks.current = Mark.checkRanges(res, marks.current);
 				setMarks(marks.current);
 
@@ -483,6 +485,10 @@ const ChatForm = forwardRef<RefProps, Props>((props, ref) => {
 		if (editNode) {
 			U.Dom.toggleClass(editNode, 'isRtl', checkRtl);
 		};
+
+		if (value) {
+			presence.typing(rootId, '');
+		};
 	};
 
 	const onCopy = () => {
@@ -587,7 +593,7 @@ const ChatForm = forwardRef<RefProps, Props>((props, ref) => {
 
 			newMarks = Mark.adjust(newMarks, 0, from);
 
-			marks.current = Mark.adjust(marks.current, from, newText.length - (to - from));
+			marks.current = Mark.adjustForReplace(marks.current, from, to, newText.length);
 			marks.current = marks.current.concat(newMarks);
 			marks.current = marks.current.filter(it => !skipMarks.includes(it.type));
 			marks.current = Mark.checkRanges(res, marks.current);
@@ -620,7 +626,7 @@ const ChatForm = forwardRef<RefProps, Props>((props, ref) => {
 		};
 
 		if (list.length) {
-			U.Common.saveClipboardFiles(list, {}, data => addAttachments(data.files));
+			saveFiles(list);
 		};
 
 		updateCounter();
@@ -761,7 +767,7 @@ const ChatForm = forwardRef<RefProps, Props>((props, ref) => {
 
 		keyboard.disableCommonDrop(true);
 
-		addAttachments(list);
+		saveFiles(list);
 
 		keyboard.disableCommonDrop(false);
 		clearDragState();
@@ -911,6 +917,12 @@ const ChatForm = forwardRef<RefProps, Props>((props, ref) => {
 		historySaveState();
 	};
 
+	// Files without a disk path (pasted, dragged from a browser) are written to temp first, since upload needs a path.
+	// Their id is taken again from that unique path, so different files of the same size pasted together stay apart
+	const saveFiles = (list: any[]) => {
+		U.Common.saveClipboardFiles(list, {}, data => addAttachments(data.files.map(it => ({ ...it, id: getAttachmentId(it.path, it.file) }))));
+	};
+
 	const addBookmark = (url: string, fromText?: boolean) => {
 		const add = (param: any) => {
 			const { title, description, url } = param;
@@ -988,6 +1000,9 @@ const ChatForm = forwardRef<RefProps, Props>((props, ref) => {
 		if (isSending.current || !canSend() || S.Menu.isOpen('blockMention')) {
 			return;
 		};
+
+		// the message itself supersedes the typing signal
+		presence.stop(rootId);
 
 		const send = sendRef.current;
 		const files = attachments.filter(it => it.isTmp && (U.Object.isFileLayout(it.layout) || U.Object.isImageLayout(it.layout)));
@@ -1488,6 +1503,8 @@ const ChatForm = forwardRef<RefProps, Props>((props, ref) => {
 		editableRef.current?.setRange(newRange);
 	};
 
+	const getAttachmentId = (path: string, file: File) => sha1(path + file.lastModified + file.size);
+
 	const getObjectFromFile = (file: File) => {
 		const path = electron.webFilePath(file);
 		const mime = file.type || electron.fileMime(path);
@@ -1504,7 +1521,7 @@ const ChatForm = forwardRef<RefProps, Props>((props, ref) => {
 		};
 
 		return {
-			id: sha1(path + file.lastModified + file.size),
+			id: getAttachmentId(path, file),
 			name: file.name,
 			layout,
 			type: type?.id,
@@ -1885,7 +1902,7 @@ const ChatForm = forwardRef<RefProps, Props>((props, ref) => {
 								{icon}
 								<div className="textWrapper">
 									<div className="name">{title}</div>
-									<div className="descr" dangerouslySetInnerHTML={{ __html: text }} />
+									<div className="descr" dangerouslySetInnerHTML={{ __html: U.String.sanitize(text) }} />
 								</div>
 							</div>
 							<div className="side right">

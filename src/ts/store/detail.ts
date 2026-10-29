@@ -319,6 +319,30 @@ class DetailStore {
 	};
 
 	/**
+	 * Reads stored values as they are, without mapping or the per-object computed cache of get().
+	 * Meant for bulk reads of thousands of objects inside one computed, where a cached computed
+	 * per object would only add overhead and could overflow the cache.
+	 * @param {string} rootId - The root ID.
+	 * @param {string} id - The item ID.
+	 * @param {string[]} keys - Relation keys to read.
+	 * @returns {any} The raw values found, with the id.
+	 */
+	public getRaw (rootId: string, id: string, keys: string[]): any {
+		const detailMap = this.map.get(rootId)?.get(id);
+		const object = { id };
+
+		if (detailMap) {
+			for (const key of keys) {
+				if (detailMap.has(key)) {
+					object[key] = detailMap.get(key);
+				};
+			};
+		};
+
+		return object;
+	};
+
+	/**
 	 * Gets the keys for an item.
 	 * @param {string} rootId - The root ID.
 	 * @param {string} id - The item ID.
@@ -613,7 +637,8 @@ class DetailStore {
 	 */
 	private mapParticipant (object) {
 		object.participantPermissions = Number(object.participantPermissions) || I.ParticipantPermissions.Reader;
-		object.participantStatus = Number(object.participantStatus) || I.ParticipantStatus.Joining;
+		// A participant that never went through the space ACL has no status and is not a join request
+		object.participantStatus = (undefined === object.participantStatus) ? null : Number(object.participantStatus) || I.ParticipantStatus.Joining;
 		object.identity = Relation.getStringValue(object.identity);
 		object.globalName = Relation.getStringValue(object.globalName);
 		object.resolvedName = object.globalName || object.identity;
